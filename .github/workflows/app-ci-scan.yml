@@ -1,0 +1,280 @@
+name: Reusable - App CI Scan
+
+on:
+  workflow_call:
+    inputs:
+      sonar_organization:
+        required: true
+        type: string
+      sonar_project_prefix:
+        required: true
+        type: string
+    secrets:
+      sonar_token:
+        required: true
+      snyk_token:
+        required: true
+      slack_webhook_url:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+
+jobs:
+  detect-changes:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      has_services: ${{ steps.matrix.outputs.has_services }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      services: ${{ steps.matrix.outputs.services }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+            api_gateway:
+              - 'api-gateway/**'
+              - 'services/api-gateway/**'
+              - 'src/gateway_service/**'
+            auth:
+              - 'auth-service/**'
+              - 'services/auth-service/**'
+              - 'src/auth_service/**'
+              - 'src/onboarding/**'
+            collection:
+              - 'collection-service/**'
+              - 'services/collection-service/**'
+              - 'src/collection_service/**'
+            processing:
+              - 'processing-service/**'
+              - 'services/processing-service/**'
+              - 'src/processing_service/**'
+            ai:
+              - 'ai-service/**'
+              - 'services/ai-service/**'
+              - 'src/ai_service/**'
+            notification:
+              - 'notification-service/**'
+              - 'services/notification-service/**'
+              - 'src/notification_service/**'
+            shared:
+              - 'src/common/**'
+              - 'src/adapters/**'
+              - 'src/config/**'
+              - 'requirements*.txt'
+
+      - name: Build service matrix
+        id: matrix
+        shell: bash
+        env:
+          FRONTEND: ${{ steps.changes.outputs.frontend }}
+          API_GATEWAY: ${{ steps.changes.outputs.api_gateway }}
+          AUTH: ${{ steps.changes.outputs.auth }}
+          COLLECTION: ${{ steps.changes.outputs.collection }}
+          PROCESSING: ${{ steps.changes.outputs.processing }}
+          AI: ${{ steps.changes.outputs.ai }}
+          NOTIFICATION: ${{ steps.changes.outputs.notification }}
+          SHARED: ${{ steps.changes.outputs.shared }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          defs = {
+            "frontend": {"service": "frontend", "path": "frontend", "type": "node", "manifest": "frontend/package.json"},
+            "api-gateway": {"service": "api-gateway", "path": "services/api-gateway", "type": "python", "manifest": "requirements.txt"},
+            "auth-service": {"service": "auth-service", "path": "services/auth-service", "type": "python", "manifest": "requirements.txt"},
+            "collection-service": {"service": "collection-service", "path": "services/collection-service", "type": "python", "manifest": "requirements.txt"},
+            "processing-service": {"service": "processing-service", "path": "services/processing-service", "type": "python", "manifest": "requirements.txt"},
+            "ai-service": {"service": "ai-service", "path": "services/ai-service", "type": "python", "manifest": "requirements.txt"},
+            "notification-service": {"service": "notification-service", "path": "services/notification-service", "type": "python", "manifest": "requirements.txt"},
+          }
+          selected = []
+          if os.environ["FRONTEND"] == "true":
+            selected.append("frontend")
+          for env, svc in {
+            "API_GATEWAY": "api-gateway",
+            "AUTH": "auth-service",
+            "COLLECTION": "collection-service",
+            "PROCESSING": "processing-service",
+            "AI": "ai-service",
+            "NOTIFICATION": "notification-service",
+          }.items():
+            if os.environ[env] == "true":
+              selected.append(svc)
+          if os.environ["SHARED"] == "true":
+            selected.extend(["api-gateway", "auth-service", "collection-service", "processing-service", "ai-service", "notification-service"])
+          deduped = []
+          for svc in selected:
+            if svc not in deduped:
+              deduped.append(svc)
+          matrix = [defs[svc] for svc in deduped]
+          print(f"has_services={'true' if matrix else 'false'}")
+          print(f"services={','.join(deduped)}")
+          print(f"matrix={json.dumps(matrix, separators=(',', ':'))}")
+          PY
+
+  sonarcloud:
+    name: SonarCloud - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_services == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run SonarCloud scan and wait for Quality Gate
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.sonar_token }}
+        with:
+          args: >
+            -Dsonar.organization=${{ inputs.sonar_organization }}
+            -Dsonar.projectKey=${{ inputs.sonar_project_prefix }}-${{ matrix.service }}
+            -Dsonar.projectName=FinsOpsIQ-${{ matrix.service }}
+            -Dsonar.sources=${{ matrix.path }}
+            -Dsonar.qualitygate.wait=true
+
+      - name: Slack notification - SonarCloud failed
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg pr "${{ github.event.pull_request.number }}" \
+            --arg author "${{ github.actor }}" \
+            --arg commit "${{ github.event.pull_request.head.sha }}" \
+            --arg service "${{ matrix.service }}" \
+            --arg sonar_url "https://sonarcloud.io/project/overview?id=${{ inputs.sonar_project_prefix }}-${{ matrix.service }}" \
+            --arg workflow_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{text:"SonarCloud Quality Gate failed.",blocks:[
+              {type:"header",text:{type:"plain_text",text:"FinsOpsIQ CI Scan - SonarCloud Failed"}},
+              {type:"section",fields:[
+                {type:"mrkdwn",text:"*Repository:*\n\($repository)"},
+                {type:"mrkdwn",text:"*PR:*\n#\($pr)"},
+                {type:"mrkdwn",text:"*Author:*\n\($author)"},
+                {type:"mrkdwn",text:"*Commit:*\n\($commit)"},
+                {type:"mrkdwn",text:"*Service:*\n\($service)"},
+                {type:"mrkdwn",text:"*Failed Quality Gate:*\nSonarCloud"}
+              ]},
+              {type:"actions",elements:[
+                {type:"button",text:{type:"plain_text",text:"SonarCloud"},url:$sonar_url},
+                {type:"button",text:{type:"plain_text",text:"View workflow"},url:$workflow_url}
+              ]}
+            ]}' > slack-payload.json
+          curl -fsS -X POST -H "Content-Type: application/json" --data @slack-payload.json "$SLACK_WEBHOOK_URL"
+
+  snyk:
+    name: Snyk - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - sonarcloud
+    if: needs.detect-changes.outputs.has_services == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: matrix.type == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        if: matrix.type == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Run Snyk scan
+        id: snyk_scan
+        shell: bash
+        env:
+          SNYK_TOKEN: ${{ secrets.snyk_token }}
+        run: |
+          set +e
+          snyk auth "$SNYK_TOKEN"
+          report="snyk-${{ matrix.service }}.json"
+          if [ "${{ matrix.type }}" = "node" ]; then
+            snyk test --file="${{ matrix.manifest }}" --severity-threshold=high --json-file-output="$report"
+          else
+            file="${{ matrix.path }}/requirements.txt"
+            [ -f "$file" ] || file="${{ matrix.manifest }}"
+            snyk test --file="$file" --package-manager=pip --severity-threshold=high --json-file-output="$report"
+          fi
+          code=$?
+          count=0
+          if [ -f "$report" ]; then
+            count="$(jq '[.vulnerabilities[]? | select(.severity == "high" or .severity == "critical")] | length' "$report")"
+          fi
+          echo "vulnerability_count=$count" >> "$GITHUB_OUTPUT"
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Upload Snyk report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-${{ matrix.service }}
+          path: snyk-${{ matrix.service }}.json
+          if-no-files-found: ignore
+
+      - name: Slack notification - Snyk failed
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg pr "${{ github.event.pull_request.number }}" \
+            --arg service "${{ matrix.service }}" \
+            --arg count "${{ steps.snyk_scan.outputs.vulnerability_count || 'unknown' }}" \
+            --arg snyk_url "https://app.snyk.io/org" \
+            --arg workflow_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{text:"Snyk dependency scan failed.",blocks:[
+              {type:"header",text:{type:"plain_text",text:"FinsOpsIQ CI Scan - Snyk Failed"}},
+              {type:"section",fields:[
+                {type:"mrkdwn",text:"*Repository:*\n\($repository)"},
+                {type:"mrkdwn",text:"*PR:*\n#\($pr)"},
+                {type:"mrkdwn",text:"*Service:*\n\($service)"},
+                {type:"mrkdwn",text:"*High/Critical Count:*\n\($count)"},
+                {type:"mrkdwn",text:"*Snyk Report:*\n\($snyk_url)"}
+              ]},
+              {type:"actions",elements:[
+                {type:"button",text:{type:"plain_text",text:"View workflow"},url:$workflow_url}
+              ]}
+            ]}' > slack-payload.json
+          curl -fsS -X POST -H "Content-Type: application/json" --data @slack-payload.json "$SLACK_WEBHOOK_URL"
+
+  no-service-changes:
+    name: No Service Changes
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_services != 'true'
+    steps:
+      - run: echo "No service-owning paths changed. Skipping SonarCloud and Snyk."

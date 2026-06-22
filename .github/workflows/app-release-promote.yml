@@ -1,0 +1,146 @@
+name: Reusable - App Release Promote
+
+on:
+  workflow_call:
+    inputs:
+      acr_login_server:
+        required: true
+        type: string
+    secrets:
+      azure_client_id:
+        required: true
+      azure_tenant_id:
+        required: true
+      azure_subscription_id:
+        required: true
+      slack_webhook_url:
+        required: false
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  ACR_LOGIN_SERVER: ${{ inputs.acr_login_server }}
+
+jobs:
+  promote:
+    name: Promote scanned SHA images to release tag
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.promote.outputs.services }}
+      source_sha: ${{ steps.sha.outputs.source_sha }}
+      image_tag: ${{ steps.sha.outputs.image_tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Determine source SHA image tag
+        id: sha
+        run: |
+          source_sha="$(git rev-list -n 1 "${{ github.event.release.tag_name }}")"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${source_sha:0:6}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: ACR login
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
+
+      - name: Retag existing SHA images
+        id: promote
+        shell: bash
+        env:
+          SHA_TAG: ${{ steps.sha.outputs.image_tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          services=(frontend api-gateway auth-service collection-service processing-service ai-service notification-service)
+          released=()
+          for service in "${services[@]}"; do
+            repo="finopsiq/${service}"
+            if az acr repository show-tags --name "${ACR_LOGIN_SERVER%%.*}" --repository "$repo" --query "[?@=='${SHA_TAG}'] | length(@)" -o tsv | grep -q '^1$'; then
+              docker pull "${ACR_LOGIN_SERVER}/${repo}:${SHA_TAG}"
+              docker tag "${ACR_LOGIN_SERVER}/${repo}:${SHA_TAG}" "${ACR_LOGIN_SERVER}/${repo}:${RELEASE_TAG}"
+              docker push "${ACR_LOGIN_SERVER}/${repo}:${RELEASE_TAG}"
+              released+=("$service")
+            fi
+          done
+          if [ "${#released[@]}" -eq 0 ]; then
+            echo "No SHA-tagged images found in ACR for ${SHA_TAG}" >&2
+            exit 1
+          fi
+          services_csv="$(IFS=','; echo "${released[*]}")"
+          echo "services=$services_csv" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Release Image Promotion"
+            echo ""
+            echo "- Version: ${RELEASE_TAG}"
+            echo "- Source SHA: ${{ steps.sha.outputs.source_sha }}"
+            echo "- Source image tag: ${SHA_TAG}"
+            echo "- Services released: ${services_csv}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update GitHub release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-metadata.md <<EOF
+          ## FinsOpsIQ Release Metadata
+
+          - Version: ${{ github.event.release.tag_name }}
+          - Source SHA: ${{ steps.sha.outputs.source_sha }}
+          - Source image tag: ${{ steps.sha.outputs.image_tag }}
+          - Services released: ${{ steps.promote.outputs.services }}
+          - ACR tags: ${{ github.event.release.tag_name }}
+          EOF
+          gh release edit "${{ github.event.release.tag_name }}" --notes-file release-metadata.md
+
+  notify:
+    name: Slack Notification
+    runs-on: ubuntu-latest
+    needs: promote
+    if: always()
+    steps:
+      - name: Send Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          status="SUCCESS"
+          text="Release promotion completed."
+          failed_stage=""
+          if [ "${{ needs.promote.result }}" != "success" ]; then
+            status="FAILED"
+            text="Release promotion failed."
+            failed_stage="Promote scanned SHA images"
+          fi
+          jq -n \
+            --arg status "$status" \
+            --arg text "$text" \
+            --arg version "${{ github.event.release.tag_name }}" \
+            --arg services "${{ needs.promote.outputs.services || 'none' }}" \
+            --arg source_sha "${{ needs.promote.outputs.source_sha || 'unknown' }}" \
+            --arg image_tag "${{ needs.promote.outputs.image_tag || 'unknown' }}" \
+            --arg failed_stage "$failed_stage" \
+            --arg workflow_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{text:$text,blocks:[
+              {type:"header",text:{type:"plain_text",text:("FinsOpsIQ Release - " + $status)}},
+              {type:"section",fields:[
+                {type:"mrkdwn",text:"*Version:*\n\($version)"},
+                {type:"mrkdwn",text:"*Services Released:*\n\($services)"},
+                {type:"mrkdwn",text:"*Source SHA:*\n\($source_sha)"},
+                {type:"mrkdwn",text:"*ACR Tags:*\n\($image_tag), \($version)"},
+                {type:"mrkdwn",text:"*Failed Stage:*\n\($failed_stage)"}
+              ]},
+              {type:"actions",elements:[{type:"button",text:{type:"plain_text",text:"View workflow"},url:$workflow_url}]}
+            ]}' > slack-payload.json
+          curl -fsS -X POST -H "Content-Type: application/json" --data @slack-payload.json "$SLACK_WEBHOOK_URL"
