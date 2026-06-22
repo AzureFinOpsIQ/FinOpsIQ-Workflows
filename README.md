@@ -13,8 +13,6 @@ No caller workflow uses `secrets: inherit`.
 | `.github/workflows/app-pr-validation.yml` | PR validation, SonarCloud, Snyk, path-based Docker build, Trivy, dev image push, Slack | `FinOpsIQ-App/.github/workflows/build.yml` |
 | `.github/workflows/app-release-build.yml` | Semantic release, path-based release image build, Trivy, ACR push, selective Helm values update, Slack | `FinOpsIQ-App/.github/workflows/release.yml` |
 | `.github/workflows/helm-aks-deploy.yml` | Values-driven Helm deploy, rollout validation, pod health, ingress health | `FinOpsIQ-Helm/.github/workflows/aks-deploy.yml` |
-| `.github/workflows/terraform-infra-dev.yml` | Checkov, Terraform fmt/validate/plan/apply, drift detection, Slack | `FinOpsIQ-Infra/.github/workflows/terraform-infra.yml` |
-| `.github/workflows/terraform-bootstrap-backend.yml` | One-time Terraform backend bootstrap | `FinOpsIQ-Infra/.github/workflows/bootstrap-backend.yml` |
 
 ## Workflow Dependency Diagram
 
@@ -52,23 +50,9 @@ FinOpsIQ-Helm
       └─ ingress health
 
 FinOpsIQ-Infra
-├─ .github/workflows/terraform-infra.yml
-│  └─ calls FinOPsIQ-Workflows/.github/workflows/terraform-infra-dev.yml
-│     ├─ Checkov
-│     ├─ terraform fmt
-│     ├─ terraform validate
-│     ├─ terraform plan artifact
-│     ├─ manual environment approval
-│     ├─ terraform apply reviewed plan
-│     ├─ scheduled drift detection
-│     └─ Slack notification
-│
-└─ .github/workflows/bootstrap-backend.yml
-   └─ calls FinOPsIQ-Workflows/.github/workflows/terraform-bootstrap-backend.yml
-      ├─ terraform init
-      ├─ terraform plan
-      ├─ terraform apply -auto-approve
-      └─ terraform output
+└─ owns standalone Terraform workflows directly
+   ├─ .github/workflows/terraform-infra.yml
+   └─ .github/workflows/bootstrap-backend.yml
 ```
 
 ## Explicit Secret Passing
