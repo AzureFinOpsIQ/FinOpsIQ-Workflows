@@ -1,34 +1,113 @@
-# FinsOpsIQ Workflow Catalog
+# FinsOpsIQ Reusable Workflow Hub
 
-This repository stores reference copies of the CI/CD workflows used by the FinsOpsIQ repositories.
+This repository owns the centralized reusable GitHub Actions workflows for FinsOpsIQ.
 
-The runnable workflows remain in their owning repositories:
+Application, Helm, and Infrastructure repositories contain thin caller workflows only. They pass explicit inputs and named secrets to this repository using `workflow_call`.
 
-| Area | Owning repository | Runnable workflow path |
+No caller workflow uses `secrets: inherit`.
+
+## Reusable Workflows
+
+| Reusable workflow | Purpose | Called by |
 | --- | --- | --- |
-| Application PR validation | `AzureFinOpsIQ/FinOpsIQ-App` | `.github/workflows/build.yml` |
-| Application release build | `AzureFinOpsIQ/FinOpsIQ-App` | `.github/workflows/release.yml` |
-| Helm / AKS deployment | `AzureFinOpsIQ/FinOpsIQ-Helm` | `.github/workflows/aks-deploy.yml` |
-| Terraform infrastructure | `AzureFinOpsIQ/FinOpsIQ-Infra` | `.github/workflows/terraform-infra.yml` |
-| Terraform backend bootstrap | `AzureFinOpsIQ/FinOpsIQ-Infra` | `.github/workflows/bootstrap-backend.yml` |
+| `.github/workflows/app-pr-validation.yml` | PR validation, SonarCloud, Snyk, path-based Docker build, Trivy, dev image push, Slack | `FinOpsIQ-App/.github/workflows/build.yml` |
+| `.github/workflows/app-release-build.yml` | Semantic release, path-based release image build, Trivy, ACR push, selective Helm values update, Slack | `FinOpsIQ-App/.github/workflows/release.yml` |
+| `.github/workflows/helm-aks-deploy.yml` | Values-driven Helm deploy, rollout validation, pod health, ingress health | `FinOpsIQ-Helm/.github/workflows/aks-deploy.yml` |
+| `.github/workflows/terraform-infra-dev.yml` | Checkov, Terraform fmt/validate/plan/apply, drift detection, Slack | `FinOpsIQ-Infra/.github/workflows/terraform-infra.yml` |
+| `.github/workflows/terraform-bootstrap-backend.yml` | One-time Terraform backend bootstrap | `FinOpsIQ-Infra/.github/workflows/bootstrap-backend.yml` |
 
-## Catalog Layout
+## Workflow Dependency Diagram
 
 ```text
-app/
-  build.yml
-  release.yml
+FinOpsIQ-App
+├─ .github/workflows/build.yml
+│  └─ calls FinOPsIQ-Workflows/.github/workflows/app-pr-validation.yml
+│     ├─ dorny/paths-filter
+│     ├─ SonarCloud
+│     ├─ Snyk
+│     ├─ Docker build changed images only
+│     ├─ Trivy image scan
+│     ├─ ACR push sha-<commit>
+│     └─ Slack notification
+│
+└─ .github/workflows/release.yml
+   └─ calls FinOPsIQ-Workflows/.github/workflows/app-release-build.yml
+      ├─ dorny/paths-filter
+      ├─ semantic version
+      ├─ Docker build changed images only
+      ├─ Trivy image scan
+      ├─ ACR push vX.Y.Z
+      ├─ GitHub Release
+      ├─ selective FinOpsIQ-Helm values-dev.yaml tag update
+      └─ Slack notification
 
-helm/
-  aks-deploy.yml
+FinOpsIQ-Helm
+└─ .github/workflows/aks-deploy.yml
+   └─ calls FinOPsIQ-Workflows/.github/workflows/helm-aks-deploy.yml
+      ├─ read image tags from values-dev.yaml / values-prod.yaml
+      ├─ az aks get-credentials
+      ├─ helm upgrade --install
+      ├─ rollout validation
+      ├─ pod readiness
+      └─ ingress health
 
-infra/
-  bootstrap-backend.yml
-  terraform-infra.yml
+FinOpsIQ-Infra
+├─ .github/workflows/terraform-infra.yml
+│  └─ calls FinOPsIQ-Workflows/.github/workflows/terraform-infra-dev.yml
+│     ├─ Checkov
+│     ├─ terraform fmt
+│     ├─ terraform validate
+│     ├─ terraform plan artifact
+│     ├─ manual environment approval
+│     ├─ terraform apply reviewed plan
+│     ├─ scheduled drift detection
+│     └─ Slack notification
+│
+└─ .github/workflows/bootstrap-backend.yml
+   └─ calls FinOPsIQ-Workflows/.github/workflows/terraform-bootstrap-backend.yml
+      ├─ terraform init
+      ├─ terraform plan
+      ├─ terraform apply -auto-approve
+      └─ terraform output
 ```
 
-## Important
+## Explicit Secret Passing
 
-These files are catalog/reference copies. GitHub Actions executes workflows from each product repository's `.github/workflows/` directory.
+Caller repositories pass only the secrets needed by the selected reusable workflow.
 
-When a workflow changes in an owning repository, update the corresponding catalog copy here to keep the delivery model documented.
+Examples:
+
+```yaml
+secrets:
+  azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+  azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+  azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+```
+
+Application workflows additionally pass:
+
+```yaml
+sonar_token: ${{ secrets.SONAR_TOKEN }}
+snyk_token: ${{ secrets.SNYK_TOKEN }}
+helm_repo_token: ${{ secrets.HELM_REPO_TOKEN }}
+slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+## Path-Based Build Strategy
+
+The application reusable workflows build only changed service images.
+
+| Filter | Paths | Images rebuilt |
+| --- | --- | --- |
+| `frontend` | `frontend/**` | `frontend` |
+| `api_gateway` | `src/gateway_service/**` | `api-gateway` |
+| `auth` | `src/auth_service/**`, `src/onboarding/**` | `auth-service` |
+| `collection` | `src/collection_service/**` | `collection-service` |
+| `processing` | `src/processing_service/**` | `processing-service` |
+| `ai` | `src/ai_service/**` | `ai-service` |
+| `notification` | `src/notification_service/**` | `notification-service` |
+| `shared` | `src/common/**`, `src/adapters/**`, `src/config/**` | all backend services |
+| `helm` | `helm/**`, `charts/**` | none |
+| `docs` | `docs/**`, `**/*.md` | none |
+
+Release builds update only the Helm image tags for services that were rebuilt.

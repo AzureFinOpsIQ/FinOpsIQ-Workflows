@@ -1,23 +1,38 @@
----
-name: "Terraform Infrastructure - DEV"
+name: Reusable - Terraform Infrastructure DEV
 
 on:
-  schedule:
-    - cron: "0 6 * * *"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "modules/**"
-      - "environments/**"
-      - ".github/workflows/terraform-infra.yml"
-  push:
-    branches:
-      - main
-    paths:
-      - "modules/**"
-      - "environments/**"
-      - ".github/workflows/terraform-infra.yml"
+  workflow_call:
+    inputs:
+      tf_working_dir:
+        required: false
+        type: string
+        default: environments/dev
+      tf_state_key:
+        required: false
+        type: string
+        default: dev/terraform.tfstate
+      tf_state_resource_group:
+        required: true
+        type: string
+      tf_state_storage_account:
+        required: true
+        type: string
+      tf_state_container:
+        required: true
+        type: string
+      tf_lock_timeout:
+        required: false
+        type: string
+        default: 15m
+    secrets:
+      azure_client_id:
+        required: true
+      azure_tenant_id:
+        required: true
+      azure_subscription_id:
+        required: true
+      slack_webhook_url:
+        required: false
 
 permissions:
   contents: read
@@ -30,16 +45,16 @@ concurrency:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  TF_WORKING_DIR: environments/dev
-  TF_STATE_KEY: dev/terraform.tfstate
+  TF_WORKING_DIR: ${{ inputs.tf_working_dir }}
+  TF_STATE_KEY: ${{ inputs.tf_state_key }}
   ARM_USE_OIDC: "true"
-  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
-  TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
-  TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
-  TF_LOCK_TIMEOUT: 15m
+  ARM_CLIENT_ID: ${{ secrets.azure_client_id }}
+  ARM_TENANT_ID: ${{ secrets.azure_tenant_id }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.azure_subscription_id }}
+  TF_STATE_RESOURCE_GROUP: ${{ inputs.tf_state_resource_group }}
+  TF_STATE_STORAGE_ACCOUNT: ${{ inputs.tf_state_storage_account }}
+  TF_STATE_CONTAINER: ${{ inputs.tf_state_container }}
+  TF_LOCK_TIMEOUT: ${{ inputs.tf_lock_timeout }}
 
 jobs:
   security_quality:
@@ -79,9 +94,9 @@ jobs:
       - name: Azure login with OIDC
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
 
       - name: Terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -120,9 +135,9 @@ jobs:
       - name: Azure login with OIDC
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
 
       - name: Terraform format check
         run: terraform fmt -check -recursive .
@@ -200,7 +215,7 @@ jobs:
       - name: Send Slack plan-ready notification
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
           PLAN_SUMMARY: ${{ steps.plan_summary.outputs.summary_text }}
         run: |
           jq -n \
@@ -254,9 +269,9 @@ jobs:
       - name: Azure login with OIDC
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
 
       - name: Terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -324,7 +339,7 @@ jobs:
     steps:
       - name: Send Slack deployment notification
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
           SECURITY_QUALITY_RESULT: ${{ needs.security_quality.result }}
           PLAN_RESULT: ${{ needs.terraform_plan.result }}
           APPLY_RESULT: ${{ needs.terraform_apply.result }}
@@ -408,9 +423,9 @@ jobs:
       - name: Azure login with OIDC
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
 
       - name: Terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -478,7 +493,7 @@ jobs:
       - name: Slack alert - drift detected
         if: steps.drift.outputs.exit_code == '2'
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
           DRIFT_SUMMARY: ${{ steps.drift.outputs.summary_text }}
         run: |
           jq -n \
@@ -507,7 +522,7 @@ jobs:
       - name: Slack alert - drift detection failed
         if: failure()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
         run: |
           jq -n \
             --arg environment "DEV" \

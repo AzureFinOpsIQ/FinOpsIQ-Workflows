@@ -1,24 +1,40 @@
-name: AKS Deployment
+name: Reusable - Helm AKS Deploy
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       environment:
-        description: Target environment to deploy.
         required: true
-        type: choice
-        options:
-          - dev
-          - prod
-        default: dev
+        type: string
+      chart_path:
+        required: false
+        type: string
+        default: charts/finopsiq
+      release_name:
+        required: false
+        type: string
+        default: finopsiq
+      aks_resource_group:
+        required: true
+        type: string
+      aks_cluster_name:
+        required: true
+        type: string
+    secrets:
+      azure_client_id:
+        required: true
+      azure_tenant_id:
+        required: true
+      azure_subscription_id:
+        required: true
 
 permissions:
   contents: read
   id-token: write
 
 env:
-  CHART_PATH: charts/finopsiq
-  RELEASE_NAME: finopsiq
+  CHART_PATH: ${{ inputs.chart_path }}
+  RELEASE_NAME: ${{ inputs.release_name }}
 
 jobs:
   deploy:
@@ -69,9 +85,9 @@ jobs:
       - name: Azure login
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -82,8 +98,8 @@ jobs:
       - name: Get AKS credentials
         run: |
           az aks get-credentials \
-            --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" \
-            --name "${{ vars.AKS_CLUSTER_NAME }}" \
+            --resource-group "${{ inputs.aks_resource_group }}" \
+            --name "${{ inputs.aks_cluster_name }}" \
             --overwrite-existing
 
       - name: Helm lint
