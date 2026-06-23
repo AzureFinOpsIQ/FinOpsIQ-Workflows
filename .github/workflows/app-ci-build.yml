@@ -40,12 +40,50 @@ jobs:
       services: ${{ steps.matrix.outputs.services }}
       helm_keys: ${{ steps.matrix.outputs.helm_keys }}
       image_tag: ${{ steps.matrix.outputs.image_tag }}
+      changed_files: ${{ steps.changed_files.outputs.changed_files_inline }}
+      bootstrap_services: ${{ steps.bootstrap.outputs.bootstrap_services }}
     steps:
       - name: Checkout merged commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Print changed files
+        id: changed_files
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HEAD_SHA}" ] || [ "${HEAD_SHA}" = "null" ]; then
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          fi
+
+          echo "Base SHA: ${BASE_SHA}"
+          echo "Head SHA: ${HEAD_SHA}"
+          echo ""
+          echo "Changed files from:"
+          echo "git diff --name-only ${BASE_SHA} ${HEAD_SHA}"
+          echo ""
+
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" | tee changed-files.txt
+
+          {
+            echo "### Changed files"
+            echo ""
+            echo '```'
+            cat changed-files.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          {
+            echo "changed_files<<EOF"
+            cat changed-files.txt
+            echo "EOF"
+            echo "changed_files_inline=$(paste -sd ',' changed-files.txt)"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Detect changed paths
         id: changes
@@ -87,6 +125,54 @@ jobs:
               - 'src/config/**'
               - 'requirements*.txt'
 
+      - name: Azure login for ACR bootstrap detection
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: Detect missing ACR images for first deployment bootstrap
+        id: bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          acr_name="${ACR_LOGIN_SERVER%%.*}"
+          services=(frontend api-gateway auth-service collection-service processing-service ai-service notification-service)
+          missing=()
+
+          for service in "${services[@]}"; do
+            repo="finopsiq/${service}"
+            if ! az acr repository show-tags --name "${acr_name}" --repository "${repo}" --top 1 -o tsv >/tmp/acr-tags.txt 2>/tmp/acr-error.txt; then
+              echo "BOOTSTRAP: ${service} has no ACR repository yet (${repo})."
+              missing+=("${service}")
+              continue
+            fi
+
+            if [ ! -s /tmp/acr-tags.txt ]; then
+              echo "BOOTSTRAP: ${service} repository exists but has no tags."
+              missing+=("${service}")
+            else
+              echo "ACR OK: ${service} already has at least one image tag."
+            fi
+          done
+
+          bootstrap_services="$(IFS=','; echo "${missing[*]}")"
+          echo "bootstrap_services=${bootstrap_services}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "### ACR bootstrap image check"
+            echo ""
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "All service image repositories already contain at least one tag."
+            else
+              echo "Missing/empty service image repositories:"
+              for service in "${missing[@]}"; do
+                echo "- ${service}"
+              done
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Build service matrix
         id: matrix
         shell: bash
@@ -99,7 +185,9 @@ jobs:
           AI: ${{ steps.changes.outputs.ai }}
           NOTIFICATION: ${{ steps.changes.outputs.notification }}
           SHARED: ${{ steps.changes.outputs.shared }}
+          BOOTSTRAP_SERVICES: ${{ steps.bootstrap.outputs.bootstrap_services }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -121,17 +209,58 @@ jobs:
               selected.append(svc)
           if os.environ["SHARED"] == "true":
             selected.extend(["api-gateway","auth-service","collection-service","processing-service","ai-service","notification-service"])
+          bootstrap_services = [svc for svc in os.environ.get("BOOTSTRAP_SERVICES", "").split(",") if svc]
+          selected.extend(bootstrap_services)
           deduped = []
           for svc in selected:
             if svc not in deduped:
               deduped.append(svc)
           matrix = [defs[svc] for svc in deduped]
+          changed_intents = {
+            "frontend": os.environ["FRONTEND"],
+            "api-gateway": os.environ["API_GATEWAY"],
+            "auth-service": os.environ["AUTH"],
+            "collection-service": os.environ["COLLECTION"],
+            "processing-service": os.environ["PROCESSING"],
+            "ai-service": os.environ["AI"],
+            "notification-service": os.environ["NOTIFICATION"],
+            "shared": os.environ["SHARED"],
+            "bootstrap": ",".join(bootstrap_services),
+          }
           print(f"has_images={'true' if matrix else 'false'}")
           print(f"services={','.join(deduped)}")
           print(f"helm_keys={','.join(item['helm_key'] for item in matrix)}")
           print(f"matrix={json.dumps(matrix, separators=(',', ':'))}")
-          print(f"image_tag={os.environ['MERGE_SHA'][:6]}")
+          source_sha = os.environ.get("MERGE_SHA") or os.environ.get("HEAD_SHA")
+          print(f"image_tag={source_sha[:6]}")
+          print(f"debug={json.dumps(changed_intents, separators=(',', ':'))}")
           PY
+
+      - name: Print detected services and build matrix
+        shell: bash
+        env:
+          SERVICES: ${{ steps.matrix.outputs.services }}
+          HELM_KEYS: ${{ steps.matrix.outputs.helm_keys }}
+          MATRIX: ${{ steps.matrix.outputs.matrix }}
+          BOOTSTRAP_SERVICES: ${{ steps.bootstrap.outputs.bootstrap_services }}
+        run: |
+          {
+            echo "### Build selection"
+            echo ""
+            echo "- Bootstrap services: ${BOOTSTRAP_SERVICES:-none}"
+            echo "- Changed services selected for image build: ${SERVICES:-none}"
+            echo "- Helm keys selected for update: ${HELM_KEYS:-none}"
+            echo ""
+            echo "Build matrix:"
+            echo '```json'
+            echo "${MATRIX:-[]}" | jq .
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "Changed services selected for image build: ${SERVICES:-none}"
+          echo "Helm keys selected for update: ${HELM_KEYS:-none}"
+          echo "Build matrix:"
+          echo "${MATRIX:-[]}" | jq .
 
   build-scan-push:
     name: Build Scan Push - ${{ matrix.service }}
@@ -216,7 +345,7 @@ jobs:
     needs:
       - detect-changes
       - build-scan-push
-    if: needs.detect-changes.outputs.has_images == 'true'
+    if: needs.detect-changes.outputs.has_images == 'true' && needs.build-scan-push.result == 'success'
     steps:
       - name: Checkout Helm repository
         uses: actions/checkout@v4
@@ -263,7 +392,20 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.has_images != 'true'
     steps:
-      - run: echo "No image-owning paths changed. Skipping build, Trivy, push, and Helm update."
+      - name: Explain why no image build is required
+        env:
+          CHANGED_FILES: ${{ needs.detect-changes.outputs.changed_files }}
+          BOOTSTRAP_SERVICES: ${{ needs.detect-changes.outputs.bootstrap_services }}
+        run: |
+          {
+            echo "No image-owning paths changed and no missing ACR bootstrap images were detected."
+            echo ""
+            echo "Changed files:"
+            echo "${CHANGED_FILES:-none}"
+            echo ""
+            echo "Bootstrap services:"
+            echo "${BOOTSTRAP_SERVICES:-none}"
+          }
 
   slack-success:
     name: Slack Notification
