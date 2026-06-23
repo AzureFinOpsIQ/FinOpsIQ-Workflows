@@ -9,6 +9,10 @@ on:
       helm_repository:
         required: true
         type: string
+      github_environment:
+        required: false
+        type: string
+        default: dev
     secrets:
       azure_client_id:
         required: true
@@ -34,6 +38,7 @@ jobs:
   detect-changes:
     name: Detect Changed Services
     runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
     outputs:
       has_images: ${{ steps.matrix.outputs.has_images }}
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -265,6 +270,7 @@ jobs:
   build-scan-push:
     name: Build Scan Push - ${{ matrix.service }}
     runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
     needs: detect-changes
     if: needs.detect-changes.outputs.has_images == 'true'
     strategy:
