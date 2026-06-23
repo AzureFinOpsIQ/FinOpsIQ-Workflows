@@ -43,6 +43,7 @@ jobs:
       has_images: ${{ steps.matrix.outputs.has_images }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       services: ${{ steps.matrix.outputs.services }}
+      skipped_services: ${{ steps.matrix.outputs.skipped_services }}
       helm_keys: ${{ steps.matrix.outputs.helm_keys }}
       image_tag: ${{ steps.matrix.outputs.image_tag }}
       changed_files: ${{ steps.changed_files.outputs.changed_files_inline }}
@@ -125,6 +126,7 @@ jobs:
               - 'services/notification-service/**'
               - 'src/notification_service/**'
             shared:
+              - 'shared/**'
               - 'src/common/**'
               - 'src/adapters/**'
               - 'src/config/**'
@@ -197,6 +199,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
+          all_services = ["frontend", "api-gateway", "auth-service", "collection-service", "processing-service", "ai-service", "notification-service"]
           defs = {
             "frontend": {"service": "frontend", "helm_key": "frontend", "context": "frontend", "dockerfile": "frontend/Dockerfile"},
             "api-gateway": {"service": "api-gateway", "helm_key": "apiGateway", "context": ".", "dockerfile": "services/api-gateway/Dockerfile"},
@@ -221,6 +224,7 @@ jobs:
             if svc not in deduped:
               deduped.append(svc)
           matrix = [defs[svc] for svc in deduped]
+          skipped = [svc for svc in all_services if svc not in deduped]
           changed_intents = {
             "frontend": os.environ["FRONTEND"],
             "api-gateway": os.environ["API_GATEWAY"],
@@ -234,6 +238,7 @@ jobs:
           }
           print(f"has_images={'true' if matrix else 'false'}")
           print(f"services={','.join(deduped)}")
+          print(f"skipped_services={','.join(skipped)}")
           print(f"helm_keys={','.join(item['helm_key'] for item in matrix)}")
           print(f"matrix={json.dumps(matrix, separators=(',', ':'))}")
           source_sha = os.environ.get("MERGE_SHA") or os.environ.get("HEAD_SHA")
@@ -245,6 +250,7 @@ jobs:
         shell: bash
         env:
           SERVICES: ${{ steps.matrix.outputs.services }}
+          SKIPPED_SERVICES: ${{ steps.matrix.outputs.skipped_services }}
           HELM_KEYS: ${{ steps.matrix.outputs.helm_keys }}
           MATRIX: ${{ steps.matrix.outputs.matrix }}
           BOOTSTRAP_SERVICES: ${{ steps.bootstrap.outputs.bootstrap_services }}
@@ -254,6 +260,7 @@ jobs:
             echo ""
             echo "- Bootstrap services: ${BOOTSTRAP_SERVICES:-none}"
             echo "- Changed services selected for image build: ${SERVICES:-none}"
+            echo "- Skipped services: ${SKIPPED_SERVICES:-none}"
             echo "- Helm keys selected for update: ${HELM_KEYS:-none}"
             echo ""
             echo "Build matrix:"
@@ -263,6 +270,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
           echo "Changed services selected for image build: ${SERVICES:-none}"
+          echo "Skipped services: ${SKIPPED_SERVICES:-none}"
           echo "Helm keys selected for update: ${HELM_KEYS:-none}"
           echo "Build matrix:"
           echo "${MATRIX:-[]}" | jq .
