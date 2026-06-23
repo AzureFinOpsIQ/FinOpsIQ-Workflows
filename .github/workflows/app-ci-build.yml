@@ -102,29 +102,19 @@ jobs:
               - 'frontend/**'
             api_gateway:
               - 'api-gateway/**'
-              - 'src/gateway_service/**'
             auth:
               - 'auth-service/**'
-              - 'src/auth_service/**'
-              - 'src/onboarding/**'
             collection:
               - 'collection-service/**'
-              - 'src/collection_service/**'
             processing:
               - 'processing-service/**'
-              - 'src/processing_service/**'
             ai:
               - 'ai-service/**'
-              - 'src/ai_service/**'
             notification:
               - 'notification-service/**'
-              - 'src/notification_service/**'
             shared:
-              - 'shared/**'
-              - 'src/common/**'
-              - 'src/adapters/**'
-              - 'src/config/**'
-              - 'requirements*.txt'
+              - 'shared-lib/**'
+              - 'requirements/**'
 
       - name: Azure login for ACR bootstrap detection
         uses: azure/login@v2
@@ -196,12 +186,12 @@ jobs:
           all_services = ["frontend", "api-gateway", "auth-service", "collection-service", "processing-service", "ai-service", "notification-service"]
           defs = {
             "frontend": {"service": "frontend", "helm_key": "frontend", "context": "frontend", "dockerfile": "frontend/Dockerfile"},
-            "api-gateway": {"service": "api-gateway", "helm_key": "apiGateway", "context": ".", "dockerfile": "api-gateway/Dockerfile"},
-            "auth-service": {"service": "auth-service", "helm_key": "auth", "context": ".", "dockerfile": "auth-service/Dockerfile"},
-            "collection-service": {"service": "collection-service", "helm_key": "collection", "context": ".", "dockerfile": "collection-service/Dockerfile"},
-            "processing-service": {"service": "processing-service", "helm_key": "processing", "context": ".", "dockerfile": "processing-service/Dockerfile"},
-            "ai-service": {"service": "ai-service", "helm_key": "ai", "context": ".", "dockerfile": "ai-service/Dockerfile"},
-            "notification-service": {"service": "notification-service", "helm_key": "notification", "context": ".", "dockerfile": "notification-service/Dockerfile"},
+            "api-gateway": {"service": "api-gateway", "helm_key": "apiGateway", "context": "api-gateway", "dockerfile": "api-gateway/Dockerfile"},
+            "auth-service": {"service": "auth-service", "helm_key": "auth", "context": "auth-service", "dockerfile": "auth-service/Dockerfile"},
+            "collection-service": {"service": "collection-service", "helm_key": "collection", "context": "collection-service", "dockerfile": "collection-service/Dockerfile"},
+            "processing-service": {"service": "processing-service", "helm_key": "processing", "context": "processing-service", "dockerfile": "processing-service/Dockerfile"},
+            "ai-service": {"service": "ai-service", "helm_key": "ai", "context": "ai-service", "dockerfile": "ai-service/Dockerfile"},
+            "notification-service": {"service": "notification-service", "helm_key": "notification", "context": "notification-service", "dockerfile": "notification-service/Dockerfile"},
           }
           selected = []
           if os.environ["FRONTEND"] == "true":
@@ -348,7 +338,7 @@ jobs:
         run: docker push "${ACR_LOGIN_SERVER}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}"
 
   update-helm:
-    name: Update Helm values-dev.yaml
+    name: Update Helm dev-values.yaml
     runs-on: ubuntu-latest
     needs:
       - detect-changes
@@ -377,9 +367,9 @@ jobs:
           IFS=',' read -ra keys <<< "$HELM_KEYS"
           for key in "${keys[@]}"; do
             [ -n "$key" ] || continue
-            yq -i ".services.${key}.image.tag = strenv(IMAGE_TAG)" charts/finopsiq/values-dev.yaml
+            yq -i ".services.${key}.image.tag = strenv(IMAGE_TAG)" charts/finopsiq/dev-values.yaml
           done
-          git diff -- charts/finopsiq/values-dev.yaml
+          git diff -- charts/finopsiq/dev-values.yaml
 
       - name: Commit Helm changes
         working-directory: helm-repo
@@ -390,7 +380,7 @@ jobs:
             echo "No Helm changes."
             exit 0
           fi
-          git add charts/finopsiq/values-dev.yaml
+          git add charts/finopsiq/dev-values.yaml
           git commit -m "chore: update dev image tags to ${{ needs.detect-changes.outputs.image_tag }}"
           git push
 

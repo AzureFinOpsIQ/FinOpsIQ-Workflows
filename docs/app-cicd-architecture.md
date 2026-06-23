@@ -7,7 +7,7 @@ FinOpsIQ-App
   ├─ ci-scan.yml
   │    └─ calls FinOPsIQ-Workflows/app-ci-scan.yml
   │         ├─ dorny/paths-filter
-  │         ├─ SonarCloud per changed service
+  │         ├─ SonarCloud repository scan
   │         └─ Snyk per changed service
   │
   ├─ ci-build.yml
@@ -16,7 +16,7 @@ FinOpsIQ-App
   │         ├─ Docker build only changed services
   │         ├─ Trivy scan
   │         ├─ Push passed images to ACR
-  │         └─ Update FinOpsIQ-Helm values-dev.yaml through yq
+  │         └─ Update FinOpsIQ-Helm dev-values.yaml through yq
   │
   └─ release.yml
        └─ calls FinOPsIQ-Workflows/app-release-promote.yml
@@ -31,13 +31,13 @@ FinOpsIQ-App
 | Filter | Paths |
 |---|---|
 | frontend | `frontend/**` |
-| api-gateway | `api-gateway/**`, `services/api-gateway/**`, `src/gateway_service/**` |
-| auth-service | `auth-service/**`, `services/auth-service/**`, `src/auth_service/**`, `src/onboarding/**` |
-| collection-service | `collection-service/**`, `services/collection-service/**`, `src/collection_service/**` |
-| processing-service | `processing-service/**`, `services/processing-service/**`, `src/processing_service/**` |
-| ai-service | `ai-service/**`, `services/ai-service/**`, `src/ai_service/**` |
-| notification-service | `notification-service/**`, `services/notification-service/**`, `src/notification_service/**` |
-| shared | `src/common/**`, `src/adapters/**`, `src/config/**`, `requirements*.txt` |
+| api-gateway | `api-gateway/**` |
+| auth-service | `auth-service/**` |
+| collection-service | `collection-service/**` |
+| processing-service | `processing-service/**` |
+| ai-service | `ai-service/**` |
+| notification-service | `notification-service/**` |
+| shared | `shared-lib/**, requirements/**` |
 
 Shared changes build all backend services because shared Python code can affect every backend workload.
 
@@ -46,12 +46,12 @@ Shared changes build all backend services because shared Python code can affect 
 | Service | Dockerfile | Context | Helm key |
 |---|---|---|---|
 | frontend | `frontend/Dockerfile` | `frontend` | `frontend` |
-| api-gateway | `services/api-gateway/Dockerfile` | `.` | `apiGateway` |
-| auth-service | `services/auth-service/Dockerfile` | `.` | `auth` |
-| collection-service | `services/collection-service/Dockerfile` | `.` | `collection` |
-| processing-service | `services/processing-service/Dockerfile` | `.` | `processing` |
-| ai-service | `services/ai-service/Dockerfile` | `.` | `ai` |
-| notification-service | `services/notification-service/Dockerfile` | `.` | `notification` |
+| api-gateway | `api-gateway/Dockerfile` | `api-gateway` | `apiGateway` |
+| auth-service | `auth-service/Dockerfile` | `auth-service` | `auth` |
+| collection-service | `collection-service/Dockerfile` | `collection-service` | `collection` |
+| processing-service | `processing-service/Dockerfile` | `processing-service` | `processing` |
+| ai-service | `ai-service/Dockerfile` | `ai-service` | `ai` |
+| notification-service | `notification-service/Dockerfile` | `notification-service` | `notification` |
 
 ## Image Tagging Strategy
 
@@ -76,7 +76,7 @@ ai-service:a453bd → ai-service:v1.0.0
 `ci-build.yml` updates only rebuilt services in:
 
 ```text
-FinOpsIQ-Helm/charts/finopsiq/values-dev.yaml
+FinOpsIQ-Helm/charts/finopsiq/dev-values.yaml
 ```
 
 The workflow uses `yq`:
@@ -139,5 +139,5 @@ Variables:
 
 - `ACR_LOGIN_SERVER`
 - `SONAR_ORGANIZATION`
-- `SONAR_PROJECT_PREFIX`
+- `SONAR_PROJECT_KEY` optional; defaults to `<owner>_<repo>` when omitted
 - `HELM_REPOSITORY`

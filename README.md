@@ -10,7 +10,7 @@ No caller workflow uses `secrets: inherit`.
 
 | Reusable workflow | Purpose | Called by |
 |---|---|---|
-| `.github/workflows/app-ci-scan.yml` | PR service change detection, SonarCloud Quality Gate, Snyk dependency scan, Slack failures | `FinOpsIQ-App/.github/workflows/ci-scan.yml` |
+| `.github/workflows/app-ci-scan.yml` | PR service change detection, service lint/test, repository-level SonarCloud Quality Gate, Snyk dependency scan, Slack failures | `FinOpsIQ-App/.github/workflows/ci-scan.yml` |
 | `.github/workflows/app-ci-build.yml` | Merged PR build with `build` label, path-based Docker build, Trivy, ACR push, selective Helm dev tag update | `FinOpsIQ-App/.github/workflows/ci-build.yml` |
 | `.github/workflows/app-release-promote.yml` | Release tag promotion by retagging existing scanned SHA images without rebuild | `FinOpsIQ-App/.github/workflows/release.yml` |
 | `.github/workflows/helm-aks-deploy.yml` | Values-driven Helm deploy, rollout validation, pod health, ingress health | `FinOpsIQ-Helm/.github/workflows/aks-deploy.yml` |
@@ -22,7 +22,7 @@ FinOpsIQ-App
   -> ci-scan.yml
      -> FinOPsIQ-Workflows/app-ci-scan.yml
         -> dorny/paths-filter
-        -> SonarCloud per changed service
+        -> SonarCloud repository scan
         -> Snyk per changed service
 
   -> ci-build.yml
@@ -33,7 +33,7 @@ FinOpsIQ-App
         -> build changed images only
         -> Trivy image scan
         -> push SHA-tagged images to ACR
-        -> update FinOpsIQ-Helm values-dev.yaml with yq
+        -> update FinOpsIQ-Helm dev-values.yaml with yq
 
   -> release.yml
      -> FinOPsIQ-Workflows/app-release-promote.yml
@@ -46,7 +46,7 @@ FinOpsIQ-App
 FinOpsIQ-Helm
   -> aks-deploy.yml
      -> FinOPsIQ-Workflows/helm-aks-deploy.yml
-        -> read image tags from values-dev.yaml / values-prod.yaml
+        -> read image tags from dev-values.yaml / prod-values.yaml
         -> helm upgrade --install
         -> rollout, pod, and ingress validation
 
@@ -76,13 +76,13 @@ secrets:
 | Filter | Paths | Action |
 |---|---|---|
 | `frontend` | `frontend/**` | frontend only |
-| `api_gateway` | `api-gateway/**`, `services/api-gateway/**`, `src/gateway_service/**` | api-gateway only |
-| `auth` | `auth-service/**`, `services/auth-service/**`, `src/auth_service/**`, `src/onboarding/**` | auth-service only |
-| `collection` | `collection-service/**`, `services/collection-service/**`, `src/collection_service/**` | collection-service only |
-| `processing` | `processing-service/**`, `services/processing-service/**`, `src/processing_service/**` | processing-service only |
-| `ai` | `ai-service/**`, `services/ai-service/**`, `src/ai_service/**` | ai-service only |
-| `notification` | `notification-service/**`, `services/notification-service/**`, `src/notification_service/**` | notification-service only |
-| `shared` | `src/common/**`, `src/adapters/**`, `src/config/**`, `requirements*.txt` | all backend services |
+| `api_gateway` | `api-gateway/**` | api-gateway only |
+| `auth` | `auth-service/**` | auth-service only |
+| `collection` | `collection-service/**` | collection-service only |
+| `processing` | `processing-service/**` | processing-service only |
+| `ai` | `ai-service/**` | ai-service only |
+| `notification` | `notification-service/**` | notification-service only |
+| `shared` | `shared-lib/**, requirements/**` | all backend services |
 
 Helm-only and documentation-only changes do not build images in the application pipelines.
 
