@@ -79,28 +79,22 @@ jobs:
               - 'frontend/**'
             api_gateway:
               - 'api-gateway/**'
-              - 'services/api-gateway/**'
               - 'src/gateway_service/**'
             auth:
               - 'auth-service/**'
-              - 'services/auth-service/**'
               - 'src/auth_service/**'
               - 'src/onboarding/**'
             collection:
               - 'collection-service/**'
-              - 'services/collection-service/**'
               - 'src/collection_service/**'
             processing:
               - 'processing-service/**'
-              - 'services/processing-service/**'
               - 'src/processing_service/**'
             ai:
               - 'ai-service/**'
-              - 'services/ai-service/**'
               - 'src/ai_service/**'
             notification:
               - 'notification-service/**'
-              - 'services/notification-service/**'
               - 'src/notification_service/**'
             shared:
               - 'shared/**'
@@ -128,12 +122,12 @@ jobs:
           all_services = ["frontend", "api-gateway", "auth-service", "collection-service", "processing-service", "ai-service", "notification-service"]
           defs = {
             "frontend": {"service": "frontend", "path": "frontend", "type": "node", "manifest": "frontend/package.json"},
-            "api-gateway": {"service": "api-gateway", "path": "services/api-gateway", "type": "python", "manifest": "requirements.txt"},
-            "auth-service": {"service": "auth-service", "path": "services/auth-service", "type": "python", "manifest": "requirements.txt"},
-            "collection-service": {"service": "collection-service", "path": "services/collection-service", "type": "python", "manifest": "requirements.txt"},
-            "processing-service": {"service": "processing-service", "path": "services/processing-service", "type": "python", "manifest": "requirements.txt"},
-            "ai-service": {"service": "ai-service", "path": "services/ai-service", "type": "python", "manifest": "requirements.txt"},
-            "notification-service": {"service": "notification-service", "path": "services/notification-service", "type": "python", "manifest": "requirements.txt"},
+            "api-gateway": {"service": "api-gateway", "path": "api-gateway", "type": "python", "manifest": "api-gateway/requirements.txt", "sonar_sources": "src/gateway_service,src/microservices/gateway_service.py"},
+            "auth-service": {"service": "auth-service", "path": "auth-service", "type": "python", "manifest": "auth-service/requirements.txt", "sonar_sources": "src/auth_service,src/auth,src/onboarding,src/microservices/auth_service.py"},
+            "collection-service": {"service": "collection-service", "path": "collection-service", "type": "python", "manifest": "collection-service/requirements.txt", "sonar_sources": "src/collection_service,src/collector,src/microservices/collection_service.py"},
+            "processing-service": {"service": "processing-service", "path": "processing-service", "type": "python", "manifest": "processing-service/requirements.txt", "sonar_sources": "src/processing_service,src/processor,src/microservices/processing_service.py"},
+            "ai-service": {"service": "ai-service", "path": "ai-service", "type": "python", "manifest": "ai-service/requirements.txt", "sonar_sources": "src/ai_service,src/ai,src/search,src/microservices/ai_service.py"},
+            "notification-service": {"service": "notification-service", "path": "notification-service", "type": "python", "manifest": "notification-service/requirements.txt", "sonar_sources": "src/notification_service,src/microservices/notification_service.py"},
           }
           selected = []
           if os.environ["FRONTEND"] == "true":
@@ -250,7 +244,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install ruff pytest
-          ruff check "${{ matrix.path }}" src tests
+          ruff check src tests
           pytest tests -q
 
       - name: Slack notification - Lint/Test failed
@@ -307,7 +301,7 @@ jobs:
             -Dsonar.organization=${{ inputs.sonar_organization }}
             -Dsonar.projectKey=${{ inputs.sonar_project_prefix }}-${{ matrix.service }}
             -Dsonar.projectName=FinsOpsIQ-${{ matrix.service }}
-            -Dsonar.sources=${{ matrix.path }}
+            -Dsonar.sources=${{ matrix.sonar_sources || matrix.path }}
             -Dsonar.qualitygate.wait=true
 
       - name: Slack notification - SonarCloud failed

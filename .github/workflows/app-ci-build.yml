@@ -102,28 +102,22 @@ jobs:
               - 'frontend/**'
             api_gateway:
               - 'api-gateway/**'
-              - 'services/api-gateway/**'
               - 'src/gateway_service/**'
             auth:
               - 'auth-service/**'
-              - 'services/auth-service/**'
               - 'src/auth_service/**'
               - 'src/onboarding/**'
             collection:
               - 'collection-service/**'
-              - 'services/collection-service/**'
               - 'src/collection_service/**'
             processing:
               - 'processing-service/**'
-              - 'services/processing-service/**'
               - 'src/processing_service/**'
             ai:
               - 'ai-service/**'
-              - 'services/ai-service/**'
               - 'src/ai_service/**'
             notification:
               - 'notification-service/**'
-              - 'services/notification-service/**'
               - 'src/notification_service/**'
             shared:
               - 'shared/**'
@@ -202,12 +196,12 @@ jobs:
           all_services = ["frontend", "api-gateway", "auth-service", "collection-service", "processing-service", "ai-service", "notification-service"]
           defs = {
             "frontend": {"service": "frontend", "helm_key": "frontend", "context": "frontend", "dockerfile": "frontend/Dockerfile"},
-            "api-gateway": {"service": "api-gateway", "helm_key": "apiGateway", "context": ".", "dockerfile": "services/api-gateway/Dockerfile"},
-            "auth-service": {"service": "auth-service", "helm_key": "auth", "context": ".", "dockerfile": "services/auth-service/Dockerfile"},
-            "collection-service": {"service": "collection-service", "helm_key": "collection", "context": ".", "dockerfile": "services/collection-service/Dockerfile"},
-            "processing-service": {"service": "processing-service", "helm_key": "processing", "context": ".", "dockerfile": "services/processing-service/Dockerfile"},
-            "ai-service": {"service": "ai-service", "helm_key": "ai", "context": ".", "dockerfile": "services/ai-service/Dockerfile"},
-            "notification-service": {"service": "notification-service", "helm_key": "notification", "context": ".", "dockerfile": "services/notification-service/Dockerfile"},
+            "api-gateway": {"service": "api-gateway", "helm_key": "apiGateway", "context": ".", "dockerfile": "api-gateway/Dockerfile"},
+            "auth-service": {"service": "auth-service", "helm_key": "auth", "context": ".", "dockerfile": "auth-service/Dockerfile"},
+            "collection-service": {"service": "collection-service", "helm_key": "collection", "context": ".", "dockerfile": "collection-service/Dockerfile"},
+            "processing-service": {"service": "processing-service", "helm_key": "processing", "context": ".", "dockerfile": "processing-service/Dockerfile"},
+            "ai-service": {"service": "ai-service", "helm_key": "ai", "context": ".", "dockerfile": "ai-service/Dockerfile"},
+            "notification-service": {"service": "notification-service", "helm_key": "notification", "context": ".", "dockerfile": "notification-service/Dockerfile"},
           }
           selected = []
           if os.environ["FRONTEND"] == "true":
