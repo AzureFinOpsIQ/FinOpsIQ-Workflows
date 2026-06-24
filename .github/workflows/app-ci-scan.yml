@@ -226,7 +226,24 @@ jobs:
               echo "- Frontend tests detected: No"
             fi
             echo "- Test stage executed: ${test_stage}"
+            if [ -f "coverage/lcov.info" ]; then
+              echo "- lcov.info location: ${{ matrix.path }}/coverage/lcov.info"
+            else
+              echo "- lcov.info location: not generated"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          echo ""
+          echo "Generated frontend coverage files:"
+          find coverage -name 'lcov.info' -type f -print -exec ls -lh {} \; || true
+
+      - name: Upload frontend coverage
+        if: matrix.type == 'node'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-lcov
+          path: ${{ matrix.path }}/coverage/lcov.info
+          if-no-files-found: warn
 
       - name: Setup Python
         if: matrix.type == 'python'
@@ -441,6 +458,13 @@ jobs:
           path: coverage-reports
           merge-multiple: true
 
+      - name: Download frontend coverage report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-lcov
+          path: coverage-reports/frontend
+
       - name: Resolve coverage report paths
         id: coverage_reports
         shell: bash
@@ -449,7 +473,11 @@ jobs:
           echo "Coverage files available to SonarCloud:"
           find coverage-reports -name 'repository-coverage-*.xml' -type f -print -exec ls -lh {} \; || true
           reports="$(find coverage-reports -name 'repository-coverage-*.xml' -type f | sort | paste -sd, -)"
+          echo "Frontend lcov files available to SonarCloud:"
+          find coverage-reports -name 'lcov.info' -type f -print -exec ls -lh {} \; || true
+          lcov_reports="$(find coverage-reports -name 'lcov.info' -type f | sort | paste -sd, -)"
           echo "paths=${reports}" >> "$GITHUB_OUTPUT"
+          echo "lcov_paths=${lcov_reports}" >> "$GITHUB_OUTPUT"
           {
             echo "### SonarCloud coverage inputs"
             echo ""
@@ -461,6 +489,11 @@ jobs:
               echo '```'
             else
               echo "- sonar.python.coverage.reportPaths: no reports found"
+            fi
+            if [ -n "$lcov_reports" ]; then
+              echo "- sonar.javascript.lcov.reportPaths: $lcov_reports"
+            else
+              echo "- sonar.javascript.lcov.reportPaths: no reports found"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -476,6 +509,7 @@ jobs:
             -Dsonar.sources=frontend/src,api-gateway/src/src,auth-service/src/src,collection-service/src/src,processing-service/src/src,ai-service/src/src,notification-service/src/src,shared-lib/shared_lib
             -Dsonar.tests=api-gateway/tests,auth-service/tests,collection-service/tests,processing-service/tests,ai-service/tests,notification-service/tests,shared-lib/tests
             -Dsonar.python.coverage.reportPaths=${{ steps.coverage_reports.outputs.paths }}
+            -Dsonar.javascript.lcov.reportPaths=${{ steps.coverage_reports.outputs.lcov_paths }}
             -Dsonar.exclusions=**/node_modules/**,**/.next/**,**/__pycache__/**,**/.pytest_cache/**,**/.ruff_cache/**,**/shared-lib/**/tests/**,**/tests/mock_data/**
             -Dsonar.qualitygate.wait=true
 
