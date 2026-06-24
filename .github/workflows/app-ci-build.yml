@@ -259,8 +259,8 @@ jobs:
           echo "Build matrix:"
           echo "${MATRIX:-[]}" | jq .
 
-  build-scan-push:
-    name: Build Scan Push - ${{ matrix.service }}
+  build-and-scan:
+    name: Build & Scan - ${{ matrix.service }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.github_environment }}
     needs: detect-changes
@@ -275,6 +275,182 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
+      - name: Build image
+        run: |
+          docker build \
+            -t "${ACR_LOGIN_SERVER}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}" \
+            -f "${{ matrix.dockerfile }}" \
+            "${{ matrix.context }}"
+
+      - name: Save Docker image
+        run: |
+          docker save "${ACR_LOGIN_SERVER}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}" | gzip > image-${{ matrix.service }}.tar.gz
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.service }}
+          path: image-${{ matrix.service }}.tar.gz
+          retention-days: 1
+
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ACR_LOGIN_SERVER }}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}
+          format: json
+          output: reports/${{ matrix.service }}-trivy.json
+          exit-code: "0"
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ matrix.service }}
+          path: reports/${{ matrix.service }}-trivy.json
+          retention-days: 1
+
+  consolidate-and-evaluate:
+    name: Consolidate Trivy Scans
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-and-scan]
+    if: needs.detect-changes.outputs.has_images == 'true'
+    steps:
+      - name: Download all Trivy reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-report-*
+          path: reports
+          merge-multiple: true
+
+      - name: Generate summary and evaluate
+        id: evaluate
+        env:
+          SERVICES: ${{ needs.detect-changes.outputs.services }}
+        run: |
+          echo "### Consolidated Trivy Vulnerability Report" > trivy-summary.md
+          echo "" >> trivy-summary.md
+          echo "| Service | Critical | High | Medium | Low | Status |" >> trivy-summary.md
+          echo "|---------|----------|------|--------|-----|--------|" >> trivy-summary.md
+          
+          total_critical=0
+          total_high=0
+          
+          IFS=',' read -ra svc_array <<< "$SERVICES"
+          echo "[" > trivy-summary.json
+          first=1
+          for svc in "${svc_array[@]}"; do
+            report="reports/${svc}-trivy.json"
+            if [ ! -f "$report" ]; then
+              echo "Missing report for $svc"
+              continue
+            fi
+            
+            crit=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$report" || echo 0)
+            high=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$report" || echo 0)
+            med=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' "$report" || echo 0)
+            low=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="LOW")] | length' "$report" || echo 0)
+            
+            total_critical=$((total_critical + crit))
+            total_high=$((total_high + high))
+            
+            status="PASS"
+            if [ "$crit" -gt 0 ] || [ "$high" -gt 0 ]; then
+              status="FAIL"
+            fi
+            
+            echo "| $svc | $crit | $high | $med | $low | $status |" >> trivy-summary.md
+            
+            if [ $first -eq 0 ]; then echo "," >> trivy-summary.json; fi
+            first=0
+            jq -n \
+              --arg svc "$svc" \
+              --argjson crit "$crit" \
+              --argjson high "$high" \
+              --argjson med "$med" \
+              --argjson low "$low" \
+              --arg status "$status" \
+              '{service: $svc, critical: $crit, high: $high, medium: $med, low: $low, status: $status}' >> trivy-summary.json
+          done
+          echo "]" >> trivy-summary.json
+          
+          cat trivy-summary.md >> $GITHUB_STEP_SUMMARY
+          
+          echo "total_critical=$total_critical" >> $GITHUB_OUTPUT
+          echo "total_high=$total_high" >> $GITHUB_OUTPUT
+          
+          if [ "$total_critical" -gt 0 ] || [ "$total_high" -gt 0 ]; then
+            echo "HIGH or CRITICAL vulnerabilities found. Blocking push."
+            exit 1
+          fi
+
+      - name: Upload consolidated reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-consolidated-reports
+          path: |
+            trivy-summary.md
+            trivy-summary.json
+          retention-days: 7
+
+      - name: Slack notification - Consolidated Results
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+          CRITICAL: ${{ steps.evaluate.outputs.total_critical || 0 }}
+          HIGH: ${{ steps.evaluate.outputs.total_high || 0 }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          summary="$(cat trivy-summary.md | sed ':a;N;$!ba;s/\n/\\n/g')"
+          status="SUCCESS"
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "${{ job.status }}" != "success" ]; then
+            status="FAILED"
+          fi
+          jq -n \
+            --arg status "$status" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "${{ github.event.pull_request.head.sha }}" \
+            --arg services "${{ needs.detect-changes.outputs.services }}" \
+            --arg critical "$CRITICAL" \
+            --arg high "$HIGH" \
+            --arg workflow_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg summary "$summary" \
+            '{text:("Trivy scan " + $status),blocks:[
+              {type:"header",text:{type:"plain_text",text:("FinsOpsIQ CI Build - " + $status)}},
+              {type:"section",fields:[
+                {type:"mrkdwn",text:"*Workflow:*\nApp CI Build"},
+                {type:"mrkdwn",text:"*Commit SHA:*\n\($commit)"},
+                {type:"mrkdwn",text:"*Services Scanned:*\n\($services)"},
+                {type:"mrkdwn",text:"*Critical:*\n\($critical)"},
+                {type:"mrkdwn",text:"*High:*\n\($high)"}
+              ]},
+              {type:"section",text:{type:"mrkdwn",text:($summary)}},
+              {type:"actions",elements:[{type:"button",text:{type:"plain_text",text:"View workflow"},url:$workflow_url}]}
+            ]}' > slack-payload.json
+          curl -fsS -X POST -H "Content-Type: application/json" --data @slack-payload.json "$SLACK_WEBHOOK_URL"
+
+  push-images:
+    name: Push Image - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    needs: [detect-changes, consolidate-and-evaluate]
+    if: needs.detect-changes.outputs.has_images == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.service }}
+
+      - name: Load Docker image
+        run: docker load < image-${{ matrix.service }}.tar.gz
+
       - name: Azure login
         uses: azure/login@v2
         with:
@@ -285,55 +461,6 @@ jobs:
       - name: ACR login
         run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
-      - name: Build image
-        run: |
-          docker build \
-            -t "${ACR_LOGIN_SERVER}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}" \
-            -f "${{ matrix.dockerfile }}" \
-            "${{ matrix.context }}"
-
-      - name: Trivy image scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.ACR_LOGIN_SERVER }}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}
-          format: table
-          output: trivy-${{ matrix.service }}.txt
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Upload Trivy summary
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-${{ matrix.service }}
-          path: trivy-${{ matrix.service }}.txt
-          if-no-files-found: ignore
-
-      - name: Slack notification - Trivy failed
-        if: failure()
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
-        run: |
-          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
-          summary="$(cat trivy-${{ matrix.service }}.txt 2>/dev/null | tail -n 40 | sed ':a;N;$!ba;s/\n/\\n/g')"
-          jq -n \
-            --arg service "${{ matrix.service }}" \
-            --arg tag "${{ needs.detect-changes.outputs.image_tag }}" \
-            --arg summary "$summary" \
-            --arg workflow_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            '{text:"Trivy image scan failed. Image was not pushed.",blocks:[
-              {type:"header",text:{type:"plain_text",text:"FinsOpsIQ CI Build - Trivy Failed"}},
-              {type:"section",fields:[
-                {type:"mrkdwn",text:"*Service:*\n\($service)"},
-                {type:"mrkdwn",text:"*Image Tag:*\n\($tag)"},
-                {type:"mrkdwn",text:"*Severity:*\nHIGH/CRITICAL"}
-              ]},
-              {type:"section",text:{type:"mrkdwn",text:"*Trivy Summary:*\n```\($summary)```"}},
-              {type:"actions",elements:[{type:"button",text:{type:"plain_text",text:"View workflow"},url:$workflow_url}]}
-            ]}' > slack-payload.json
-          curl -fsS -X POST -H "Content-Type: application/json" --data @slack-payload.json "$SLACK_WEBHOOK_URL"
-
       - name: Push image
         run: docker push "${ACR_LOGIN_SERVER}/finopsiq/${{ matrix.service }}:${{ needs.detect-changes.outputs.image_tag }}"
 
@@ -342,8 +469,8 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - detect-changes
-      - build-scan-push
-    if: needs.detect-changes.outputs.has_images == 'true' && needs.build-scan-push.result == 'success'
+      - push-images
+    if: needs.detect-changes.outputs.has_images == 'true' && needs.push-images.result == 'success'
     steps:
       - name: Checkout Helm repository
         uses: actions/checkout@v4
@@ -410,7 +537,9 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - detect-changes
-      - build-scan-push
+      - build-and-scan
+      - consolidate-and-evaluate
+      - push-images
       - update-helm
       - no-image-build
     if: always()
@@ -422,8 +551,8 @@ jobs:
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
           failed="${{ contains(needs.*.result, 'failure') }}"
           status="SUCCESS"
-          text="Image build completed."
-          [ "$failed" = "true" ] && status="FAILED" && text="Image build failed."
+          text="Image build pipeline completed."
+          [ "$failed" = "true" ] && status="FAILED" && text="Image build pipeline failed."
           jq -n \
             --arg status "$status" \
             --arg text "$text" \
@@ -432,7 +561,7 @@ jobs:
             --arg services "${{ needs.detect-changes.outputs.services || 'none' }}" \
             --arg workflow_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             '{text:$text,blocks:[
-              {type:"header",text:{type:"plain_text",text:("FinsOpsIQ CI Build - " + $status)}},
+              {type:"header",text:{type:"plain_text",text:("FinsOpsIQ CI Build Pipeline - " + $status)}},
               {type:"section",fields:[
                 {type:"mrkdwn",text:"*Repository:*\n\($repository)"},
                 {type:"mrkdwn",text:"*Image Tag:*\n\($tag)"},
