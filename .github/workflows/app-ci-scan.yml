@@ -587,7 +587,7 @@ jobs:
           if [ "${{ matrix.type }}" = "node" ]; then
             cd "${{ matrix.path }}"
             npm ci
-            snyk test --file="package.json" --severity-threshold=high --json-file-output="$report"
+            snyk test --file="package.json" --org=AzureFinOpsIQ --severity-threshold=high --json-file-output="$report"
             code=$?
             cd -
           else
@@ -596,13 +596,13 @@ jobs:
               cd "${{ matrix.path }}"
               python -m pip install --upgrade pip
               pip install -r requirements.txt
-              snyk test --file="requirements.txt" --package-manager=pip --severity-threshold=high --json-file-output="$report"
+              snyk test --file="requirements.txt" --org=AzureFinOpsIQ --package-manager=pip --severity-threshold=high --json-file-output="$report"
               code=$?
               cd -
             else
               python -m pip install --upgrade pip
               pip install -r "${{ matrix.manifest }}"
-              snyk test --file="${{ matrix.manifest }}" --package-manager=pip --severity-threshold=high --json-file-output="$report"
+              snyk test --file="${{ matrix.manifest }}" --org=AzureFinOpsIQ --package-manager=pip --severity-threshold=high --json-file-output="$report"
               code=$?
             fi
           fi
