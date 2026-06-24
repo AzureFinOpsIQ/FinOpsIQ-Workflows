@@ -275,14 +275,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Python coverage
-        if: matrix.type == 'python'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.service }}
-          path: coverage-${{ matrix.service }}.xml
-          if-no-files-found: warn
-
       - name: Slack notification - Lint/Test failed
         if: failure()
         env:
@@ -311,12 +303,108 @@ jobs:
             ]}' > slack-payload.json
           curl -fsS -X POST -H "Content-Type: application/json" --data @slack-payload.json "$SLACK_WEBHOOK_URL"
 
+  python-coverage:
+    name: Python Coverage - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - lint-test
+    if: needs.detect-changes.outputs.has_services == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: shared-lib
+            path: shared-lib
+            manifest: requirements/services/base.txt
+            cov_source: shared-lib/shared_lib
+            test_path: shared-lib/tests
+          - service: api-gateway
+            path: api-gateway
+            manifest: api-gateway/requirements.txt
+            cov_source: api-gateway/src
+            test_path: api-gateway/tests
+          - service: auth-service
+            path: auth-service
+            manifest: auth-service/requirements.txt
+            cov_source: auth-service/src
+            test_path: auth-service/tests
+          - service: collection-service
+            path: collection-service
+            manifest: collection-service/requirements.txt
+            cov_source: collection-service/src
+            test_path: collection-service/tests
+          - service: processing-service
+            path: processing-service
+            manifest: processing-service/requirements.txt
+            cov_source: processing-service/src
+            test_path: processing-service/tests
+          - service: ai-service
+            path: ai-service
+            manifest: ai-service/requirements.txt
+            cov_source: ai-service/src
+            test_path: ai-service/tests
+          - service: notification-service
+            path: notification-service
+            manifest: notification-service/requirements.txt
+            cov_source: notification-service/src
+            test_path: notification-service/tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate Python coverage XML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements/services/base.txt
+          pip install ./shared-lib
+          if [ "${{ matrix.service }}" != "shared-lib" ]; then pip install -r ${{ matrix.manifest }}; fi
+          pip install pytest pytest-cov
+
+          coverage_file="repository-coverage-${{ matrix.service }}.xml"
+          if [ -d "${{ matrix.test_path }}" ] && find "${{ matrix.test_path }}" -name 'test_*.py' -print -quit | grep -q .; then
+            pytest "${{ matrix.test_path }}" -q \
+              --cov="${{ matrix.cov_source }}" \
+              --cov-report="term-missing" \
+              --cov-report="xml:${coverage_file}"
+          else
+            echo "No Python tests found for ${{ matrix.service }}. Coverage file will not be generated."
+          fi
+
+          echo ""
+          echo "Generated coverage files:"
+          find . -maxdepth 2 -name 'repository-coverage-*.xml' -type f -print -exec ls -lh {} \;
+          {
+            echo "### Repository coverage - ${{ matrix.service }}"
+            echo ""
+            if [ -f "${coverage_file}" ]; then
+              echo "- coverage.xml location: ${coverage_file}"
+            else
+              echo "- coverage.xml location: not generated"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Python coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-coverage-${{ matrix.service }}
+          path: repository-coverage-${{ matrix.service }}.xml
+          if-no-files-found: warn
+
   sonarcloud:
     name: SonarCloud - Repository
     runs-on: ubuntu-latest
     needs:
       - detect-changes
       - lint-test
+      - python-coverage
     if: needs.detect-changes.outputs.has_services == 'true'
     steps:
       - name: Checkout
@@ -349,7 +437,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: coverage-*
+          pattern: repository-coverage-*
           path: coverage-reports
           merge-multiple: true
 
@@ -359,8 +447,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "Coverage files available to SonarCloud:"
-          find coverage-reports -name 'coverage-*.xml' -type f -print -exec ls -lh {} \; || true
-          reports="$(find coverage-reports -name 'coverage-*.xml' -type f | sort | paste -sd, -)"
+          find coverage-reports -name 'repository-coverage-*.xml' -type f -print -exec ls -lh {} \; || true
+          reports="$(find coverage-reports -name 'repository-coverage-*.xml' -type f | sort | paste -sd, -)"
           echo "paths=${reports}" >> "$GITHUB_OUTPUT"
           {
             echo "### SonarCloud coverage inputs"
@@ -369,7 +457,7 @@ jobs:
               echo "- sonar.python.coverage.reportPaths: $reports"
               echo ""
               echo '```'
-              find coverage-reports -name 'coverage-*.xml' -type f | sort
+              find coverage-reports -name 'repository-coverage-*.xml' -type f | sort
               echo '```'
             else
               echo "- sonar.python.coverage.reportPaths: no reports found"
