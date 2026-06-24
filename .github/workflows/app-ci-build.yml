@@ -473,15 +473,20 @@ jobs:
     if: needs.detect-changes.outputs.has_images == 'true' && needs.push-images.result == 'success'
     steps:
       - name: Normalize Helm repository format
+        id: helm_repository
+        shell: bash
         run: |
-          if [[ ! "${HELM_REPOSITORY}" == *"/"* ]]; then
-            echo "HELM_REPOSITORY=${{ github.repository_owner }}/${HELM_REPOSITORY}" >> $GITHUB_ENV
+          set -euo pipefail
+          repository="${HELM_REPOSITORY}"
+          if [[ "${repository}" != */* ]]; then
+            repository="${{ github.repository_owner }}/${repository}"
           fi
+          echo "repository=${repository}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout Helm repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.HELM_REPOSITORY }}
+          repository: ${{ steps.helm_repository.outputs.repository }}
           token: ${{ secrets.helm_repo_token }}
           path: helm-repo
 
